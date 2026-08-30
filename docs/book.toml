@@ -1,0 +1,19 @@
+[book]
+title = "sess"
+description = "Save and reopen terminal sessions, standalone."
+authors = ["sess contributors"]
+language = "en"
+src = "src"
+
+[build]
+build-dir = "book"
+
+[output.html]
+default-theme = "light"
+preferred-dark-theme = "navy"
+git-repository-url = "https://github.com/YOUR_USER/sess"
+edit-url-template = "https://github.com/YOUR_USER/sess/edit/main/docs/{path}"
+
+[output.html.fold]
+enable = true
+level = 1
