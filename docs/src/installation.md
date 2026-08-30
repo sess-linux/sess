@@ -19,7 +19,7 @@ sudo mv sess /usr/local/bin/
 ## From source
 
 ```bash
-git clone https://github.com/YOUR_USER/sess
+git clone https://github.com/sess-linux/sess
 cd sess
 cargo build --release
 sudo cp target/release/sess /usr/local/bin/
