@@ -1,5 +1,5 @@
 [package]
-name = "sess"
+name = "sess-tmux"
 version = "0.3.0"
 edition = "2021"
 description = "Save and reopen terminal sessions (layout, commands, cwd) without relying on tmux plugins"
