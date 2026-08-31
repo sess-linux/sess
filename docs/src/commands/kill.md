@@ -10,5 +10,8 @@ sess kill-server
 ```
 
 `kill-session` also deletes the matching saved snapshot, if one exists —
-this is a destructive shortcut, not the same as `sess delete` followed by
-walking away; double-check the name before running it.
+this is the one-shot equivalent of [`close`](./close.md) followed by
+[`delete`](./delete.md), not the same as either on its own. Double-check
+the name before running it; see the
+[overlap table](../commands.md#save--open--switch--close--delete--kill-session-at-a-glance)
+if you want the exact difference from `close`/`delete` spelled out.

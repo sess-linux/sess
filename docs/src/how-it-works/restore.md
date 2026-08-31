@@ -8,7 +8,11 @@
 3. `tmux select-layout` with the exact layout string captured at save
    time, so the geometry matches precisely instead of an even/generic
    split.
-4. `tmux send-keys` to relaunch each pane's saved command — guarded with
+4. If the snapshot has any [persisted environment variables](../environment.md),
+   `export NAME=value` is sent into every pane's shell first — each pane
+   is a separate process, so a var exported in one pane never reaches the
+   others on its own.
+5. `tmux send-keys` to relaunch each pane's saved command — guarded with
    `--` so a command that happens to start with `-` is never misread as a
    flag.
 
@@ -19,3 +23,11 @@ for the `--force` override).
 Restoring relaunches commands from scratch — it does not preserve a
 process's internal memory state (variables loaded in a REPL, for example).
 See [Limitations](../limitations.md).
+
+## Attaching, for real
+
+Handing control of the terminal back to tmux for an interactive attach
+needs the child process to inherit the real stdin/stdout/stderr, not have
+them captured into a pipe — `sess` uses `Command::status()` for this one
+call specifically (`Command::output()`, used everywhere else for its
+convenient error capture, would silently break interactive attach).

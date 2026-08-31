@@ -20,3 +20,21 @@ tmux already identified). This only works on Linux.
 Idle shells (`bash`, `zsh`, `fish`, `sh`, `dash` with nothing running) are
 recorded as empty — there's nothing to relaunch, `sess` just returns the
 cursor to that directory on restore.
+
+## Capturing sess itself
+
+A pane running `sess save` for its own session is a special case: at the
+instant of capture, that pane's foreground process is `sess` itself (it
+hasn't returned to the shell prompt yet). Recording that as a "command to
+relaunch" would mean restoring the session later silently re-runs the
+`sess save` invocation — potentially resurrecting an old snapshot with
+`--force`. `sess` detects this (comparing against its own binary name) and
+treats it the same as an idle shell.
+
+## Environment variables
+
+If [`[environment] persist`](../environment.md) lists any variable names,
+those that are currently set are captured into the snapshot's `env` map at
+this point — nothing else in the environment is ever touched. See
+[Environment variable persistence](../environment.md) for the secret-name
+warning that applies here.

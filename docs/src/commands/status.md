@@ -4,6 +4,16 @@
 sess status
 ```
 
-Shows a quick summary: how many sessions are saved, how many tmux sessions
-are currently live, and both lists by name — useful for spotting saved
-sessions that drifted out of sync with what's actually running.
+A quick summary of every session's [state](../states.md): counts up top,
+then one line per session with its state and (for stale/broken ones) why.
+
+```
+1 running, 2 saved, 1 stale, 0 broken (4 total)
+  RUNNING  backend-debug
+  SAVED    scraper-mimir
+  SAVED    onboarding-call
+  STALE    old-project — a saved directory no longer exists: /tmp/old-clone
+```
+
+Uses the exact same state detection as `list`, `switch`, and the picker —
+nothing here is computed differently.

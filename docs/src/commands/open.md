@@ -18,3 +18,8 @@ saved snapshot instead of attaching to what's currently running.
 ```bash
 sess open backend-debug --force
 ```
+
+If the snapshot has any [persisted environment variables](../environment.md),
+`sess` prints a one-line summary of what it restored. Selecting a session
+by state (running/saved/stale/broken) instead of by name directly? See
+[`switch`](./switch.md) and [Session states](../states.md).
