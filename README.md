@@ -3,7 +3,7 @@
 A small utility to save and restore tmux sessions without depending on tmux
 plugins.
 
-[https://crates.io/crates/sess-tmux](crates.io/sess)
+https://crates.io/crates/sess-tmux
 
 `sess` snapshots a live tmux session — its windows, panes, working
 directories, layout, and foreground commands — stores it locally, and
