@@ -70,9 +70,10 @@ inferred differently in different places:
 ## Commands
 
 ```text
-sess start <name> [--auto-save]
+sess start <name> [--auto-save] [--no-auto-save]
     Start a new tmux session tracked by sess. --auto-save also starts a
     background loop that periodically re-saves it (see Auto-save below).
+    --no-auto-save opts out even if config.toml enables it by default.
 
 sess save [name] [--force]
     Save the current tmux session under a name (creates or updates the
@@ -141,6 +142,10 @@ session under itself, so you don't lose recent state if you forget to
 enabled = true
 interval = 30
 ```
+
+With `enabled = true`, every `sess start <name>` turns auto-save on by
+default — no need to pass `--auto-save` each time. Use `sess start <name>
+--no-auto-save` to opt out for one particular session.
 
 The background loop exits on its own once the tmux session it's watching
 disappears. It is a plain detached child process, not a fully daemonized

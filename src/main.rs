@@ -16,7 +16,11 @@ fn run() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Some(Command::Start { name, auto_save }) => commands::start(name, auto_save),
+        Some(Command::Start {
+            name,
+            auto_save,
+            no_auto_save,
+        }) => commands::start(name, auto_save, no_auto_save),
         Some(Command::Save { name, force }) => commands::save(name, force),
         Some(Command::List { json }) => commands::list(json),
         Some(Command::Open { name, force }) => commands::open(name, force),

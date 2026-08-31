@@ -19,15 +19,18 @@ fn run_tmux(args: &[&str]) -> Result<()> {
     Ok(())
 }
 
-pub fn start(name: String, auto_save: bool) -> Result<()> {
+pub fn start(name: String, auto_save: bool, no_auto_save: bool) -> Result<()> {
     if capture::tmux_session_exists(&name) {
         println!("'{name}' is already running, attaching...");
         return restore::attach(&name);
     }
     restore::start_new(&name)?;
 
-    if auto_save {
-        let cfg = config::load();
+    let cfg = config::load();
+    // --no-auto-save always wins; otherwise --auto-save; otherwise fall back
+    // to the config default so `[autosave] enabled = true` actually does
+    // something without requiring the flag every time.
+    if should_autosave(auto_save, no_auto_save, &cfg.autosave) {
         let interval = cfg.autosave.interval;
         match autosave::start(&name, interval) {
             Ok(log) => println!(
@@ -344,4 +347,57 @@ pub fn kill_server() -> Result<()> {
     run_tmux(&["kill-server"])?;
     println!("tmux server killed.");
     Ok(())
+}
+
+/// Whether `sess start` should turn on auto-save. `--no-auto-save` always
+/// wins (explicit opt-out); otherwise `--auto-save` wins (explicit opt-in);
+/// otherwise falls back to the configured default, so
+/// `[autosave] enabled = true` in config.toml has an effect without
+/// requiring the flag on every single `sess start`.
+fn should_autosave(flag: bool, no_flag: bool, cfg: &crate::core::config::AutosaveConfig) -> bool {
+    if no_flag {
+        false
+    } else {
+        flag || cfg.enabled
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::config::AutosaveConfig;
+
+    #[test]
+    fn explicit_flag_wins_even_if_config_disabled() {
+        let cfg = AutosaveConfig {
+            enabled: false,
+            interval: 30,
+        };
+        assert!(should_autosave(true, false, &cfg));
+    }
+
+    #[test]
+    fn falls_back_to_config_default_when_flag_absent() {
+        let cfg = AutosaveConfig {
+            enabled: true,
+            interval: 30,
+        };
+        assert!(should_autosave(false, false, &cfg));
+
+        let cfg = AutosaveConfig {
+            enabled: false,
+            interval: 30,
+        };
+        assert!(!should_autosave(false, false, &cfg));
+    }
+
+    #[test]
+    fn no_auto_save_always_wins() {
+        let cfg = AutosaveConfig {
+            enabled: true,
+            interval: 30,
+        };
+        assert!(!should_autosave(false, true, &cfg));
+        assert!(!should_autosave(true, true, &cfg));
+    }
 }

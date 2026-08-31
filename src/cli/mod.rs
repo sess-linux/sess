@@ -18,9 +18,13 @@ pub enum Command {
     /// Starts a new session tracked by sess (no need to already be inside tmux).
     Start {
         name: String,
-        /// Also starts a background auto-save loop for this session.
-        #[arg(long)]
+        /// Also starts a background auto-save loop for this session
+        /// (overrides config either way, see --no-auto-save).
+        #[arg(long, conflicts_with = "no_auto_save")]
         auto_save: bool,
+        /// Explicitly skips auto-save even if config.toml has it enabled by default.
+        #[arg(long)]
+        no_auto_save: bool,
     },
     /// Saves the current tmux session under a name (creates or updates the snapshot).
     Save {
