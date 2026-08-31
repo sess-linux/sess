@@ -7,13 +7,6 @@ plugins.
 directories, layout, and foreground commands — stores it locally, and
 recreates it later, even after a reboot.
 
-## Why this exists
-
-Tools like `tmux-resurrect` and `sesh` already solve similar problems, but
-they depend on the tmux plugin ecosystem (TPM and friends) being already set
-up. `sess` is a standalone binary: build it once, put it on your `PATH`, and
-use it directly on top of tmux — no plugins required.
-
 ## Requirements
 
 - tmux installed and available on `PATH`
