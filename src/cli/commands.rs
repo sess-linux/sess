@@ -2,7 +2,8 @@ use anyhow::{Context, Result};
 use std::io::{self, Write};
 use std::process::Command;
 
-use crate::core::{capture, restore, storage};
+use crate::core::state::StateKind;
+use crate::core::{autosave, capture, config, env, restore, state, storage};
 
 fn run_tmux(args: &[&str]) -> Result<()> {
     let out = Command::new("tmux")
@@ -18,12 +19,25 @@ fn run_tmux(args: &[&str]) -> Result<()> {
     Ok(())
 }
 
-pub fn start(name: String) -> Result<()> {
+pub fn start(name: String, auto_save: bool) -> Result<()> {
     if capture::tmux_session_exists(&name) {
         println!("'{name}' is already running, attaching...");
         return restore::attach(&name);
     }
     restore::start_new(&name)?;
+
+    if auto_save {
+        let cfg = config::load();
+        let interval = cfg.autosave.interval;
+        match autosave::start(&name, interval) {
+            Ok(log) => println!(
+                "auto-save enabled for '{name}' (every {interval}s, log: {})",
+                log.display()
+            ),
+            Err(e) => eprintln!("warning: could not start auto-save: {e}"),
+        }
+    }
+
     restore::attach(&name)
 }
 
@@ -33,9 +47,7 @@ pub fn save(name: Option<String>, force: bool) -> Result<()> {
 
     let already_exists = storage::exists(&saved_as)?;
     if already_exists && !force {
-        print!(
-            "a saved session named '{saved_as}' already exists. Overwrite? [y/N] "
-        );
+        print!("a saved session named '{saved_as}' already exists. Overwrite? [y/N] ");
         io::stdout().flush().ok();
         let mut answer = String::new();
         io::stdin().read_line(&mut answer)?;
@@ -47,35 +59,77 @@ pub fn save(name: Option<String>, force: bool) -> Result<()> {
 
     let mut snapshot = capture::capture_session(&session_name)?;
     snapshot.name = saved_as.clone();
+
+    let cfg = config::load();
+    if !cfg.environment.persist.is_empty() {
+        let captured = env::capture_allowed(&cfg.environment.persist);
+        for name in captured.keys() {
+            if env::looks_like_secret(name) {
+                println!(
+                    "warning: '{name}' looks like it might hold a secret — persisting it anyway because it's explicitly listed in your config."
+                );
+            }
+        }
+        snapshot.env = captured;
+    }
+
     storage::save(&snapshot, true)?;
 
-    let pane_count: usize = snapshot.windows.iter().map(|w| w.panes.len()).sum();
-    println!("session saved as '{saved_as}' ({pane_count} panes).");
+    let pane_count = snapshot.pane_count();
+    if snapshot.env.is_empty() {
+        println!("session saved as '{saved_as}' ({pane_count} panes).");
+    } else {
+        println!(
+            "session saved as '{saved_as}' ({pane_count} panes, {} env var(s) persisted).",
+            snapshot.env.len()
+        );
+    }
     Ok(())
 }
 
 pub fn list(json: bool) -> Result<()> {
-    let sessions = storage::list()?;
+    let states = state::all()?;
+
     if json {
-        let json = serde_json::to_string_pretty(&sessions)?;
+        let json = serde_json::to_string_pretty(&states)?;
         println!("{json}");
         return Ok(());
     }
 
-    if sessions.is_empty() {
-        println!("no saved sessions yet. Use `sess save <name>` to create one.");
+    if states.is_empty() {
+        println!("no sessions yet. Use `sess start <name>` or `sess save <name>` to create one.");
         return Ok(());
     }
 
-    println!("{:<20} {:>8} {:>10}  {}", "NAME", "PANES", "SIZE", "SAVED");
-    for s in &sessions {
+    println!(
+        "{:<20} {:<8} {:>3} {:>3} {:>10}  SAVED",
+        "NAME", "STATE", "WIN", "PANE", "SIZE"
+    );
+    for s in &states {
+        let saved = s
+            .saved_at
+            .map(|t| t.format("%Y-%m-%d %H:%M").to_string())
+            .unwrap_or_else(|| "-".to_string());
+        let size = s
+            .size_bytes
+            .map(storage::human_size)
+            .unwrap_or_else(|| "-".to_string());
         println!(
-            "{:<20} {:>8} {:>10}  {}",
+            "{:<20} {:<8} {:>3} {:>3} {:>10}  {}",
             s.name,
-            s.pane_count,
-            storage::human_size(s.size_bytes),
-            s.created_at.format("%Y-%m-%d %H:%M")
+            s.kind.to_string(),
+            s.window_count
+                .map(|n| n.to_string())
+                .unwrap_or_else(|| "-".to_string()),
+            s.pane_count
+                .map(|n| n.to_string())
+                .unwrap_or_else(|| "-".to_string()),
+            size,
+            saved
         );
+        if let Some(detail) = &s.detail {
+            println!("  {}", detail);
+        }
     }
     Ok(())
 }
@@ -92,8 +146,19 @@ pub fn open(name: String, force: bool) -> Result<()> {
     }
 
     restore::restore(&snapshot)?;
+    if !snapshot.env.is_empty() {
+        println!(
+            "restoring {} persisted env var(s): {}",
+            snapshot.env.len(),
+            snapshot.env.keys().cloned().collect::<Vec<_>>().join(", ")
+        );
+    }
     println!("session '{name}' restored.");
     restore::attach(&name)
+}
+
+pub fn switch() -> Result<()> {
+    crate::run_picker()
 }
 
 pub fn attach(name: String) -> Result<()> {
@@ -103,17 +168,41 @@ pub fn attach(name: String) -> Result<()> {
     restore::attach(&name)
 }
 
+/// Closes a running session (kills the live tmux session) without touching
+/// its saved snapshot. The counterpart of `open`: `close` then `open` should
+/// round-trip back to the same state.
+pub fn close(name: String) -> Result<()> {
+    if !capture::tmux_session_exists(&name) {
+        let hint = match state::of(&name)? {
+            Some(s) if s.kind == StateKind::Saved => " (it has a saved snapshot but isn't running)",
+            Some(s) if s.kind == StateKind::Stale => {
+                " (it has a stale saved snapshot but isn't running)"
+            }
+            Some(s) if s.kind == StateKind::Broken => {
+                " (its saved snapshot is broken and it isn't running)"
+            }
+            _ => "",
+        };
+        anyhow::bail!("'{name}' is not currently running{hint}");
+    }
+    run_tmux(&["kill-session", "-t", &name])?;
+    println!("session '{name}' closed. Its saved snapshot (if any) was not touched.");
+    Ok(())
+}
+
+/// Deletes a saved session's snapshot only. Does not touch a live tmux
+/// session with the same name — use `close` for that, or `kill-session` to do
+/// both at once.
 pub fn delete(name: String) -> Result<()> {
+    if !storage::exists(&name)? {
+        anyhow::bail!("no saved session named '{name}' exists");
+    }
+    storage::delete(&name)?;
+    println!("saved session '{name}' deleted.");
+
     if capture::tmux_session_exists(&name) {
-        run_tmux(&["kill-session", "-t", &name])?;
-        println!("tmux session '{name}' killed.");
+        println!("note: '{name}' is still running as a live tmux session — use `sess close {name}` to stop it too.");
     }
-
-    if storage::exists(&name)? {
-        storage::delete(&name)?;
-        println!("saved session '{name}' deleted.");
-    }
-
     Ok(())
 }
 
@@ -131,8 +220,7 @@ pub fn duplicate(from: String, to: String) -> Result<()> {
         anyhow::bail!("source and destination names are the same");
     }
 
-    let snapshot = storage::load(&from)?;
-    let mut snapshot = snapshot;
+    let mut snapshot = storage::load(&from)?;
     snapshot.name = to.clone();
     storage::save(&snapshot, false)?;
     println!("session '{from}' duplicated to '{to}'.");
@@ -140,46 +228,92 @@ pub fn duplicate(from: String, to: String) -> Result<()> {
 }
 
 pub fn status() -> Result<()> {
-    let saved = storage::list()?;
-    let live = tmux_sessions()?;
+    let states = state::all()?;
 
-    println!("saved sessions: {}", saved.len());
-    println!("live tmux sessions: {}", live.len());
+    let running = states
+        .iter()
+        .filter(|s| s.kind == StateKind::Running)
+        .count();
+    let saved = states.iter().filter(|s| s.kind == StateKind::Saved).count();
+    let stale = states.iter().filter(|s| s.kind == StateKind::Stale).count();
+    let broken = states
+        .iter()
+        .filter(|s| s.kind == StateKind::Broken)
+        .count();
 
-    if !saved.is_empty() {
-        println!("saved names:");
-        for s in &saved {
-            println!("  - {}", s.name);
-        }
-    }
+    println!(
+        "{running} running, {saved} saved, {stale} stale, {broken} broken ({} total)",
+        states.len()
+    );
 
-    if !live.is_empty() {
-        println!("live names:");
-        for name in &live {
-            println!("  - {}", name);
-        }
+    for s in &states {
+        let extra = s
+            .detail
+            .as_deref()
+            .map(|d| format!(" — {d}"))
+            .unwrap_or_default();
+        println!("  {:<8} {}{}", s.kind.to_string(), s.name, extra);
     }
 
     Ok(())
 }
 
-fn tmux_sessions() -> Result<Vec<String>> {
-    let out = Command::new("tmux")
-        .args(["list-sessions", "-F", "#{session_name}"])
-        .output()
-        .context("could not list tmux sessions")?;
+pub fn doctor(fix: bool) -> Result<()> {
+    use crate::core::doctor::{run_checks, CheckStatus};
 
-    if !out.status.success() {
-        return Ok(Vec::new());
+    let results = run_checks();
+    for r in &results {
+        let icon = match r.status {
+            CheckStatus::Ok => "\u{2713}",
+            CheckStatus::Warn => "\u{26a0}",
+            CheckStatus::Fail => "\u{2717}",
+        };
+        println!("{icon} {}", r.label);
+        if let Some(detail) = &r.detail {
+            println!("    {detail}");
+        }
     }
 
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    Ok(stdout
-        .lines()
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .map(str::to_string)
-        .collect())
+    if fix {
+        println!();
+        println!("applying safe fixes...");
+        for r in crate::core::doctor::fix() {
+            println!("  - {}", r.label);
+        }
+    }
+
+    let code = crate::core::doctor::exit_code(&results);
+    if code != 0 {
+        std::process::exit(code);
+    }
+    Ok(())
+}
+
+pub fn auto_save(name: String, stop: bool, interval: Option<u64>) -> Result<()> {
+    if stop {
+        autosave::stop(&name)?;
+        println!("auto-save stopped for '{name}'.");
+        return Ok(());
+    }
+
+    if !capture::tmux_session_exists(&name) {
+        anyhow::bail!(
+            "'{name}' is not currently running — start it first with `sess start {name}`"
+        );
+    }
+
+    let cfg = config::load();
+    let interval = interval.unwrap_or(cfg.autosave.interval);
+    let log = autosave::start(&name, interval)?;
+    println!(
+        "auto-save started for '{name}' (every {interval}s). Log: {}",
+        log.display()
+    );
+    Ok(())
+}
+
+pub fn auto_save_loop(name: String, interval: u64) -> Result<()> {
+    autosave::run_loop(&name, interval)
 }
 
 pub fn prune() -> Result<()> {

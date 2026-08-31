@@ -40,6 +40,33 @@ pub fn tmux_session_exists(name: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// Lists the names of every currently running tmux session. Returns an empty
+/// list (not an error) if tmux has no server running at all — that's a normal
+/// state, not a failure.
+pub fn list_live_sessions() -> Result<Vec<String>> {
+    let out = Command::new("tmux")
+        .args(["list-sessions", "-F", "#{session_name}"])
+        .output();
+
+    let out = match out {
+        Ok(o) => o,
+        Err(_) => return Ok(Vec::new()),
+    };
+
+    if !out.status.success() {
+        // Most common cause: no tmux server running yet. Not an error for our purposes.
+        return Ok(Vec::new());
+    }
+
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    Ok(stdout
+        .lines()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .collect())
+}
+
 /// Captures the complete state (windows + panes) of a tmux session by name.
 pub fn capture_session(session_name: &str) -> Result<SessionSnapshot> {
     // One line per window: index, name, layout.
@@ -77,8 +104,9 @@ pub fn capture_session(session_name: &str) -> Result<SessionSnapshot> {
                 let short_command = p.next().unwrap_or("").to_string();
                 let pid: u32 = p.next().unwrap_or("0").parse().unwrap_or(0);
 
-                // "bash"/"zsh"/"fish" means an idle shell: nothing to relaunch.
-                let command = if is_bare_shell(&short_command) {
+                // Idle shells and sess capturing itself mid-command both mean
+                // "nothing meaningful to relaunch".
+                let command = if is_bare_shell(&short_command) || is_sess_itself(&short_command) {
                     String::new()
                 } else {
                     // pane_pid is the shell PID for the pane, not the foreground process.
@@ -86,26 +114,52 @@ pub fn capture_session(session_name: &str) -> Result<SessionSnapshot> {
                     // one tmux already identified, then read its full command line from /proc.
                     full_cmdline_of_foreground(pid, &short_command).unwrap_or(short_command)
                 };
-                PaneSnapshot { index, cwd, command }
+                PaneSnapshot {
+                    index,
+                    cwd,
+                    command,
+                }
             })
             .collect();
 
-        windows.push(WindowSnapshot { index, name, layout, panes });
+        windows.push(WindowSnapshot {
+            index,
+            name,
+            layout,
+            panes,
+        });
     }
 
     if windows.is_empty() {
         bail!("no windows were found in session '{session_name}'");
     }
 
-    Ok(SessionSnapshot {
-        name: session_name.to_string(),
-        created_at: chrono::Local::now(),
+    Ok(SessionSnapshot::new(
+        session_name.to_string(),
         windows,
-    })
+        Default::default(),
+    ))
 }
 
 fn is_bare_shell(cmd: &str) -> bool {
     matches!(cmd, "bash" | "zsh" | "fish" | "sh" | "dash")
+}
+
+/// True when `short_command` is sess's own binary name. A pane running
+/// `sess save` (or `sess open`, etc.) captures *itself* as the pane's
+/// foreground process at the instant of capture — it hasn't returned to the
+/// shell prompt yet. Relaunching that on restore would silently re-run a
+/// `sess` command (most dangerously `sess save ... --force`, which can
+/// resurrect an old snapshot), so it's treated the same as an idle shell:
+/// nothing meaningful to relaunch.
+fn is_sess_itself(short_command: &str) -> bool {
+    let own_name = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.file_name().map(|n| n.to_string_lossy().to_string()));
+    match own_name {
+        Some(name) => short_command == name,
+        None => short_command == "sess",
+    }
 }
 
 /// Given a pane shell PID, search among its descendants for the foreground process
@@ -139,7 +193,11 @@ fn children_of(pid: u32) -> Vec<u32> {
     let path = format!("/proc/{pid}/task/{pid}/children");
     std::fs::read_to_string(path)
         .ok()
-        .map(|s| s.split_whitespace().filter_map(|p| p.parse().ok()).collect())
+        .map(|s| {
+            s.split_whitespace()
+                .filter_map(|p| p.parse().ok())
+                .collect()
+        })
         .unwrap_or_default()
 }
 
@@ -164,5 +222,28 @@ fn cmdline_of(pid: u32) -> Option<String> {
         None
     } else {
         Some(cmd)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn is_bare_shell_matches_known_shells_only() {
+        assert!(is_bare_shell("bash"));
+        assert!(is_bare_shell("zsh"));
+        assert!(is_bare_shell("fish"));
+        assert!(!is_bare_shell("vim"));
+        assert!(!is_bare_shell("sess"));
+    }
+
+    #[test]
+    fn is_sess_itself_matches_the_running_binarys_name() {
+        // In `cargo test`, the running binary is the test harness, not `sess` —
+        // this exercises the fallback branch, which is what a real `sess`
+        // build would hit via std::env::current_exe() succeeding with "sess".
+        assert!(!is_sess_itself("bash"));
+        assert!(!is_sess_itself("vim"));
     }
 }

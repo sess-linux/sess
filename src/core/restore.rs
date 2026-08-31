@@ -2,6 +2,7 @@ use anyhow::{Context, Result};
 use std::process::Command;
 
 use super::capture::tmux_session_exists;
+use super::env::shell_single_quote;
 use super::model::SessionSnapshot;
 
 fn run_tmux(args: &[&str]) -> Result<()> {
@@ -67,13 +68,7 @@ pub fn restore(snapshot: &SessionSnapshot) -> Result<()> {
 
         // 2. Split windows: one for each extra pane, all starting from pane 0.
         for pane in window.panes.iter().skip(1) {
-            run_tmux(&[
-                "split-window",
-                "-t",
-                &window_target,
-                "-c",
-                &pane.cwd,
-            ])?;
+            run_tmux(&["split-window", "-t", &window_target, "-c", &pane.cwd])?;
         }
 
         // 3. Apply the exact saved geometry (avoids the splits being evenly distributed).
@@ -81,19 +76,44 @@ pub fn restore(snapshot: &SessionSnapshot) -> Result<()> {
             run_tmux(&["select-layout", "-t", &window_target, &window.layout])?;
         }
 
-        // 4. Relaunch the commands that were running, pane by pane.
+        // 4. Restore persisted environment variables, then relaunch the commands
+        //    that were running, pane by pane. Env vars are re-exported inside
+        //    every pane's own shell (each pane is a separate process, so a
+        //    `tmux set-environment` alone would not reach a shell already running).
         for pane in &window.panes {
+            let pane_target = format!("{}.{}", window_target, pane.index);
+
+            if !snapshot.env.is_empty() {
+                let exports = snapshot
+                    .env
+                    .iter()
+                    .map(|(k, v)| format!("export {k}={}", shell_single_quote(v)))
+                    .collect::<Vec<_>>()
+                    .join("; ");
+                run_tmux(&["send-keys", "-t", &pane_target, "--", &exports, "Enter"])?;
+            }
+
             if pane.command.is_empty() {
                 continue;
             }
-            let pane_target = format!("{}.{}", window_target, pane.index);
             // "--" prevents an argument starting with "-" from being interpreted as a flag.
-            run_tmux(&["send-keys", "-t", &pane_target, "--", &pane.command, "Enter"])?;
+            run_tmux(&[
+                "send-keys",
+                "-t",
+                &pane_target,
+                "--",
+                &pane.command,
+                "Enter",
+            ])?;
         }
     }
 
     // Leave the first window selected, as it was originally.
-    run_tmux(&["select-window", "-t", &format!("{}:{}", snapshot.name, first_window.index)])?;
+    run_tmux(&[
+        "select-window",
+        "-t",
+        &format!("{}:{}", snapshot.name, first_window.index),
+    ])?;
 
     Ok(())
 }
@@ -103,9 +123,26 @@ pub fn start_new(name: &str) -> Result<()> {
     run_tmux(&["new-session", "-d", "-s", name])
 }
 
-/// Attaches to (or switches to) an existing tmux session.
+/// Attaches to (or switches to) an existing tmux session. Unlike the other
+/// tmux calls in this module, this one must inherit the real terminal —
+/// `Command::output()` pipes stdout/stderr, which breaks tmux's own TTY
+/// detection and makes an interactive attach impossible. `.status()` inherits
+/// stdin/stdout/stderr from the parent by default, which is what we need here.
 pub fn attach(name: &str) -> Result<()> {
     let inside_tmux = std::env::var("TMUX").is_ok();
-    let flag = if inside_tmux { "switch-client" } else { "attach-session" };
-    run_tmux(&[flag, "-t", name])
+    let flag = if inside_tmux {
+        "switch-client"
+    } else {
+        "attach-session"
+    };
+
+    let status = Command::new("tmux")
+        .args([flag, "-t", name])
+        .status()
+        .context("could not execute tmux")?;
+
+    if !status.success() {
+        anyhow::bail!("tmux {flag} -t {name} failed");
+    }
+    Ok(())
 }

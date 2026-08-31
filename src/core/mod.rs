@@ -1,4 +1,9 @@
+pub mod autosave;
 pub mod capture;
+pub mod config;
+pub mod doctor;
+pub mod env;
 pub mod model;
 pub mod restore;
+pub mod state;
 pub mod storage;

@@ -1,8 +1,13 @@
 [package]
 name = "sess"
-version = "0.2.2"
+version = "0.3.0"
 edition = "2021"
 description = "Save and reopen terminal sessions (layout, commands, cwd) without relying on tmux plugins"
+license = "MIT"
+repository = "https://github.com/sess-linux/sess"
+readme = "README.md"
+keywords = ["tmux", "terminal", "session", "cli", "productivity"]
+categories = ["command-line-utilities"]
 
 [[bin]]
 name = "sess"
@@ -17,6 +22,7 @@ chrono = { version = "0.4", features = ["serde"] }
 anyhow = "1"
 ratatui = "=0.26.3"
 crossterm = "=0.27.0"
+toml = "=0.7.8"
 
 [profile.release]
 opt-level = "z"
